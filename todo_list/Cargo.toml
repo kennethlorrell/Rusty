@@ -1,0 +1,9 @@
+[package]
+name = "todo_list"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0.217", features = ["derive"] }
+yew = { version = "0.21.0", features = ["csr"] }
+web-sys = "0.3"
