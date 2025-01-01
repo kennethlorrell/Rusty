@@ -113,14 +113,41 @@
             display: flex;
             gap: 10px;
         }
+
+        .import-export {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .button {
+            background-color: #5d5dff;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            padding: 10px 15px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            text-align: center;
+            display: inline-block;
+        }
+
+        .button:hover {
+            background-color: #4a4aff;
+        }
+
+        #file-input {
+            display: none;
+        }
     </style>
-<link rel="modulepreload" href="/todo_list-ffea2de234ed2a2.js" crossorigin=anonymous integrity="sha384-G2T8wgBshDYo0hK5f6iKEZuSXroDEOJvM6/+IhFOTQE8Z96nRgWmKW9upnDwUMAR"><link rel="preload" href="/todo_list-ffea2de234ed2a2_bg.wasm" crossorigin=anonymous integrity="sha384-lvrkc7zrICs/+9+DPmU7G/Kc2V/rv1wt27CVBn55v6vRmTzpm5yZK0mzvkg5o2ZI" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/todo_list-c230461392c593fe.js" crossorigin=anonymous integrity="sha384-OxmXRa8+MPnYkcZzpjWK/1PzY1TPvLRSkD0U+rSMX86YgU96+gge7eZ0qXMD2LVY"><link rel="preload" href="/todo_list-c230461392c593fe_bg.wasm" crossorigin=anonymous integrity="sha384-ic3fPdeEBR2TbUsF/LlVoVoT6NU9BO5sf/t1Z1x+G+PnacOZFwYkdnxqAgFGGjOi" as="fetch" type="application/wasm"></head>
 <body>
 <main id="app"></main>
 
-<script type="module" nonce="siBkCBZlqh1axYMplR02Tg==">
-import init, * as bindings from '/todo_list-ffea2de234ed2a2.js';
-const wasm = await init({ module_or_path: '/todo_list-ffea2de234ed2a2_bg.wasm' });
+<script type="module" nonce="8IEyE9Z0Vz4/M2r8baS91w==">
+import init, * as bindings from '/todo_list-c230461392c593fe.js';
+const wasm = await init({ module_or_path: '/todo_list-c230461392c593fe_bg.wasm' });
 
 
 window.wasmBindings = bindings;

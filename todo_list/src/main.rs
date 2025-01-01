@@ -1,6 +1,37 @@
+use serde::{Deserialize, Serialize};
+use web_sys::{Blob, FileReader, HtmlInputElement, Url};
+use web_sys::wasm_bindgen::JsCast;
 use yew::prelude::*;
 use yew::Renderer;
-use todo_list::Task;
+use wasm_bindgen::closure::Closure;
+
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+pub struct Task {
+    pub id: u32,
+    pub description: String,
+    pub completed: bool
+}
+
+#[derive(Properties, PartialEq, Clone)]
+pub struct AddTaskProps {
+    pub on_add: Callback<String>,
+}
+
+#[derive(Properties, PartialEq, Clone)]
+pub struct TaskListProps {
+    pub tasks: Vec<Task>,
+    pub on_toggle: Callback<u32>,
+    pub on_edit: Callback<(u32, String)>,
+    pub on_delete: Callback<u32>,
+}
+
+#[derive(Properties, PartialEq, Clone)]
+pub struct TaskItemProps {
+    pub task: Task,
+    pub on_toggle: Callback<u32>,
+    pub on_edit: Callback<(u32, String)>,
+    pub on_delete: Callback<u32>,
+}
 
 fn main() {
     Renderer::<App>::new().render();
@@ -61,23 +92,74 @@ fn app() -> Html {
         })
     };
 
-    html! {
-        <div class="todo-app">
-            <h1>{ "To-Do List" }</h1>
-            <AddTask on_add={add_task} />
-            <TaskList
-                tasks={(*tasks).clone()}
-                on_toggle={toggle_task}
-                on_edit={edit_task}
-                on_delete={delete_task}
-            />
-        </div>
-    }
-}
+    let export_tasks = {
+        let tasks = tasks.clone();
 
-#[derive(Properties, PartialEq, Clone)]
-pub struct AddTaskProps {
-    pub on_add: Callback<String>,
+        Callback::from(move |_| {
+            if let Ok(json) = serde_json::to_string(&*tasks) {
+                let blob = Blob::new_with_str_sequence(&js_sys::Array::of1(&json.into())).unwrap();
+                let url = Url::create_object_url_with_blob(&blob).unwrap();
+
+                let window = web_sys::window().unwrap();
+                let document = window.document().unwrap();
+                let anchor = document.create_element("a").unwrap();
+                anchor.set_attribute("href", &url).unwrap();
+                anchor.set_attribute("download", "tasks.json").unwrap();
+                document.body().unwrap().append_child(&anchor).unwrap();
+                anchor.dyn_ref::<web_sys::HtmlElement>().unwrap().click();
+                Url::revoke_object_url(&url).unwrap();
+            }
+        })
+    };
+
+    let import_tasks = {
+        let tasks = tasks.clone();
+        let next_id = next_id.clone();
+
+        Callback::from(move |event: Event| {
+            let input: HtmlInputElement = event.target_unchecked_into();
+            if let Some(file) = input.files().unwrap().get(0) {
+                let reader = FileReader::new().unwrap();
+                let tasks = tasks.clone();
+                let next_id = next_id.clone();
+                let reader_clone = reader.clone();
+
+                let onload = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                    if let Ok(js_value) = reader_clone.result() {
+                        if let Some(text) = js_value.as_string() {
+                            if let Ok(imported_tasks) = serde_json::from_str::<Vec<Task>>(&text) {
+                                tasks.set(imported_tasks.clone());
+                                let max_id = imported_tasks.iter().map(|task| task.id).max().unwrap_or(0);
+                                next_id.set(max_id + 1);
+                            }
+                        }
+                    }
+                }) as Box<dyn FnMut(_)>);
+
+                reader.set_onload(Some(onload.as_ref().unchecked_ref()));
+                reader.read_as_text(&file).unwrap();
+                onload.forget();
+            }
+        })
+    };
+
+    html! {
+    <div class="todo-app">
+        <h1>{ "Список завдань" }</h1>
+        <div class="import-export">
+            <input type="file" accept=".json" onchange={import_tasks} id="file-input" style="display: none;" />
+            <label for="file-input" class="button">{ "Імпортувати" }</label>
+            <button class="button" onclick={export_tasks}>{ "Експортувати" }</button>
+        </div>
+        <AddTask on_add={add_task} />
+        <TaskList
+            tasks={(*tasks).clone()}
+            on_toggle={toggle_task}
+            on_edit={edit_task}
+            on_delete={delete_task}
+        />
+    </div>
+    }
 }
 
 #[function_component(AddTask)]
@@ -119,14 +201,6 @@ fn add_task(props: &AddTaskProps) -> Html {
     }
 }
 
-#[derive(Properties, PartialEq, Clone)]
-pub struct TaskListProps {
-    pub tasks: Vec<Task>,
-    pub on_toggle: Callback<u32>,
-    pub on_edit: Callback<(u32, String)>,
-    pub on_delete: Callback<u32>,
-}
-
 #[function_component(TaskList)]
 fn task_list(props: &TaskListProps) -> Html {
     let tasks = props.tasks.clone();
@@ -146,14 +220,6 @@ fn task_list(props: &TaskListProps) -> Html {
             }) }
         </ul>
     }
-}
-
-#[derive(Properties, PartialEq, Clone)]
-pub struct TaskItemProps {
-    pub task: Task,
-    pub on_toggle: Callback<u32>,
-    pub on_edit: Callback<(u32, String)>,
-    pub on_delete: Callback<u32>,
 }
 
 #[function_component(TaskItem)]
