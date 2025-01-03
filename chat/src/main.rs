@@ -28,46 +28,74 @@ impl Actor for ChatSession {
     }
 }
 
+#[derive(Message)]
+#[rtype(result = "()")]
+struct BroadcastMessage(String);
+
+impl Handler<BroadcastMessage> for ChatSession {
+    type Result = ();
+
+    fn handle(&mut self, msg: BroadcastMessage, ctx: &mut Self::Context) {
+        ctx.text(msg.0);
+    }
+}
+
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for ChatSession {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match msg {
             Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
             Ok(ws::Message::Text(text)) => {
-                if text.starts_with("/pm ") {
-                    let parts: Vec<&str> = text.splitn(3, ' ').collect();
-                    if parts.len() == 3 {
-                        let to = parts[1].to_string();
-                        let content = parts[2].to_string();
-                        let connections = self.app_state.connections.lock().unwrap();
-                        if let Some(addr) = connections.get(&to) {
-                            addr.do_send(PrivateMessage { from: self.username.clone(), to: to.clone(), content: content.clone() });
+                let parsed: serde_json::Result<ClientMessage> = serde_json::from_str(&text);
+                match parsed {
+                    Ok(client_msg) => {
+                        if client_msg.recipient == "public" {
+                            // Public message
+                            let message = format!("{}: {}", self.username, client_msg.content);
 
+                            // Store message for all users
                             let mut messages = self.app_state.messages.lock().unwrap();
-                            let sender_history = messages.entry(self.username.clone()).or_insert(Vec::new());
-                            sender_history.push(format!("To {}: {}", to, content));
-                            let recipient_history = messages.entry(to.clone()).or_insert(Vec::new());
-                            recipient_history.push(format!("From {}: {}", self.username, content));
-                        } else {
-                            ctx.text("User not found");
-                        }
-                    } else {
-                        ctx.text("Invalid private message format. Use /pm username message");
-                    }
-                } else {
-                    let message = format!("{}: {}", self.username, text);
+                            for user in self.app_state.users.lock().unwrap().keys() {
+                                let user_history = messages.entry(user.clone()).or_insert(Vec::new());
+                                user_history.push(message.clone());
+                            }
 
-                    let mut messages = self.app_state.messages.lock().unwrap();
-                    for user in self.app_state.users.lock().unwrap().keys() {
-                        let user_history = messages.entry(user.clone()).or_insert(Vec::new());
-                        user_history.push(message.clone());
-                    }
-                    ctx.text(message);
+                            // Broadcast to all connected clients
+                            let connections = self.app_state.connections.lock().unwrap();
+                            for (user, addr) in connections.iter() {
+                                addr.do_send(BroadcastMessage(message.clone()));
+                            }
+                        } else {
+                            // Private message
+                            let to = client_msg.recipient.clone();
+                            let content = client_msg.content.clone();
+                            let connections = self.app_state.connections.lock().unwrap();
+                            if let Some(addr) = connections.get(&to) {
+                                addr.do_send(PrivateMessage { from: self.username.clone(), to: to.clone(), content: content.clone() });
+
+                                // Store message history
+                                let mut messages = self.app_state.messages.lock().unwrap();
+                                let sender_history = messages.entry(self.username.clone()).or_insert(Vec::new());
+                                sender_history.push(format!("To {}: {}", to, content));
+                                let recipient_history = messages.entry(to.clone()).or_insert(Vec::new());
+                                recipient_history.push(format!("From {}: {}", self.username, content));
+                            } else {
+                                ctx.text("User not found");
+                            }
+                        }
+                    },
+                    Err(_) => ctx.text("Invalid message format"),
                 }
             }
             Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
             _ => (),
         }
     }
+}
+
+#[derive(Deserialize)]
+struct ClientMessage {
+    recipient: String,
+    content: String,
 }
 
 #[derive(Message)]
@@ -174,6 +202,20 @@ async fn ws_handler(req: HttpRequest, stream: web::Payload, data: web::Data<AppS
     Ok(HttpResponse::Unauthorized().body("Unauthorized"))
 }
 
+#[derive(Serialize)]
+struct OnlineUsersResponse {
+    users: Vec<String>,
+}
+
+async fn get_online_users(data: web::Data<AppState>, query: web::Query<HistoryRequest>) -> HttpResponse {
+    let sessions = data.sessions.lock().unwrap();
+    if let Some(username) = sessions.get(&query.token) {
+        let connections = data.connections.lock().unwrap();
+        let users: Vec<String> = connections.keys().cloned().collect();
+        return HttpResponse::Ok().json(OnlineUsersResponse { users });
+    }
+    HttpResponse::Unauthorized().body("Invalid token")
+}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -186,6 +228,7 @@ async fn main() -> std::io::Result<()> {
             .route("/signup", web::post().to(signup))
             .route("/login", web::post().to(login))
             .route("/history", web::get().to(get_history))
+            .route("/online_users", web::get().to(get_online_users))
             .service(fs::Files::new("/", ".").index_file("index.html"))
     })
         .bind("127.0.0.1:8080")?
