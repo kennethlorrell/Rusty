@@ -9,46 +9,46 @@
         #chat-container { margin-top: 20px; }
         #messages { height: 300px; overflow-y: scroll; }
         #user-list { list-style: none; padding: 0; }
-        #user-list li { padding: 5px 0; }
     </style>
 </head>
 <body>
     <div id="auth" class="container" style="max-width: 400px; margin-top: 50px;">
-        <h2 class="text-center">Login</h2>
+        <h2 class="text-center">Вхід</h2>
         <div class="mb-3">
-            <input type="text" id="login-username" class="form-control" placeholder="Username" />
+            <input type="text" id="login-username" class="form-control" placeholder="Логін" />
         </div>
         <div class="mb-3">
-            <input type="password" id="login-password" class="form-control" placeholder="Password" />
+            <input type="password" id="login-password" class="form-control" placeholder="Пароль" />
         </div>
-        <button onclick="login()" class="btn btn-primary w-100">Login</button>
+        <button onclick="login()" class="btn btn-primary w-100">Увійти</button>
 
         <hr>
 
-        <h2 class="text-center">Signup</h2>
+        <h2 class="text-center">Реєстрація</h2>
         <div class="mb-3">
-            <input type="text" id="signup-username" class="form-control" placeholder="Username" />
+            <input type="text" id="signup-username" class="form-control" placeholder="Логін" />
         </div>
         <div class="mb-3">
-            <input type="password" id="signup-password" class="form-control" placeholder="Password" />
+            <input type="password" id="signup-password" class="form-control" placeholder="Пароль" />
         </div>
-        <button onclick="signup()" class="btn btn-success w-100">Signup</button>
+        <button onclick="signup()" class="btn btn-success w-100">Зареєструватись</button>
     </div>
 
     <div id="chat-container" class="container d-flex" style="display: none;">
         <div id="users" class="me-3" style="width: 20%;">
-            <h3>Online Users</h3>
+            <h3>Зараз онлайн:</h3>
             <ul id="user-list" class="list-group"></ul>
+            <button onclick="logout()" class="btn btn-danger btn-sm my-3 w-100">Вийти</button>
         </div>
         <div id="chat" style="width: 80%;">
-            <h2>Chat Room</h2>
+            <h2>Чат</h2>
             <div id="messages" class="border rounded p-3 mb-3 bg-white"></div>
             <div id="input" class="input-group">
-                <input type="text" id="message" class="form-control" placeholder="Type a message..." />
+                <input type="text" id="message" class="form-control" placeholder="Напишіть повідомлення..." />
                 <select id="recipient" class="form-select">
-                    <option value="public">Public</option>
+                    <option value="public">Всім</option>
                 </select>
-                <button onclick="sendMessage()" class="btn btn-primary">Send</button>
+                <button onclick="sendMessage()" class="btn btn-primary">Відправити</button>
             </div>
         </div>
     </div>
@@ -67,9 +67,9 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, password })
             })
-                .then(response => response.text())
-                .then(data => alert(data))
-                .catch(err => console.error(err));
+            .then(response => response.text())
+            .then(data => alert(data))
+            .catch(err => console.error(err));
         }
 
         function login() {
@@ -80,19 +80,39 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, password })
             })
-                .then(response => {
-                    if (response.ok) return response.json();
-                    throw new Error('Login failed');
-                })
-                .then(data => {
-                    token = data.token;
-                    document.getElementById('auth').style.display = 'none';
-                    document.getElementById('chat-container').style.display = 'flex';
-                    connectWebSocket();
-                    loadHistory();
-                    fetchOnlineUsers();
-                })
-                .catch(err => alert(err.message));
+            .then(response => {
+                if (response.ok) return response.json();
+                throw new Error('Login failed');
+            })
+            .then(data => {
+                token = data.token;
+                localStorage.setItem('token', token);
+                document.getElementById('auth').style.display = 'none';
+                document.getElementById('chat-container').style.display = 'flex';
+                connectWebSocket();
+                loadHistory();
+                fetchOnlineUsers();
+            })
+            .catch(err => alert(err.message));
+        }
+
+        window.onload = () => {
+            const storedToken = localStorage.getItem('token');
+            console.log(storedToken);
+
+            if (storedToken) {
+                token = storedToken;
+                document.getElementById('auth').style.display = 'none';
+                document.getElementById('chat-container').style.display = 'flex';
+                connectWebSocket();
+                loadHistory();
+                fetchOnlineUsers();
+            }
+        };
+
+        function logout() {
+            localStorage.removeItem('token');
+            location.reload();
         }
 
         function connectWebSocket() {
@@ -103,15 +123,21 @@
             };
 
             ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                if (data.type === 'public') {
-                    addMessage(`${data.from}: ${data.content}`);
-                } else if (data.type === 'private') {
-                    addMessage(`Private from ${data.from}: ${data.content}`);
-                }
-                // Update online users if necessary
-                if (data.type === 'user_list') {
-                    updateUserList(data.users);
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'public') {
+                        addMessage(`${data.from}: ${data.content}`, 'public');
+                    } else if (data.type === 'private') {
+                        addMessage(`Приватне повідомлення від ${data.from}: ${data.content}`, 'private');
+                    } else if (data.type === 'user_connected') {
+                        addUser(data.username);
+                        addMessage(`${data.username} приєднався до чату.`, 'system');
+                    } else if (data.type === 'user_disconnected') {
+                        removeUser(data.username);
+                        addMessage(`${data.username} вийшов з чату.`, 'system');
+                    }
+                } catch (e) {
+                    console.error("Error parsing message:", e);
                 }
             };
 
@@ -131,11 +157,13 @@
             }
         }
 
-        function addMessage(message) {
+        function addMessage(message, type) {
             const messages = document.getElementById('messages');
             const msg = document.createElement('div');
-            if (message.startsWith("Private")) {
+            if (type === 'private') {
                 msg.className = 'alert alert-secondary';
+            } else if (type === 'system') {
+                msg.className = 'alert alert-info';
             } else {
                 msg.className = 'alert alert-primary';
             }
@@ -173,7 +201,7 @@
             const userList = document.getElementById('user-list');
             const recipientSelect = document.getElementById('recipient');
             userList.innerHTML = '';
-            recipientSelect.innerHTML = '<option value="public">Public</option>';
+            recipientSelect.innerHTML = '<option value="public">Всім</option>';
             users.forEach(user => {
                 const li = document.createElement('li');
                 li.className = 'list-group-item';
@@ -188,12 +216,19 @@
         }
 
         function getUsernameFromToken() {
-            // Implement a way to decode the token to get the username, or store it upon login
-            // For simplicity, assume it's stored elsewhere
             return 'your_username';
         }
 
-        // Send message on Enter key
+        function addUser(username) {
+            onlineUsers.push(username);
+            updateUserList(onlineUsers);
+        }
+
+        function removeUser(username) {
+            onlineUsers = onlineUsers.filter(user => user !== username);
+            updateUserList(onlineUsers);
+        }
+
         document.getElementById('message').addEventListener('keypress', function (e) {
             if (e.key === 'Enter') {
                 sendMessage();

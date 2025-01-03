@@ -18,13 +18,35 @@ impl Actor for ChatSession {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         let addr = ctx.address();
-        let mut connections = self.app_state.connections.lock().unwrap();
-        connections.insert(self.username.clone(), addr);
+        let username = self.username.clone();
+        {
+            let mut connections = self.app_state.connections.lock().unwrap();
+            connections.insert(username.clone(), addr);
+        }
+
+        let connections = self.app_state.connections.lock().unwrap();
+        for (user, addr) in connections.iter() {
+            if user != &username {
+                addr.do_send(UserConnected {
+                    username: username.clone(),
+                });
+            }
+        }
     }
 
     fn stopped(&mut self, _: &mut Self::Context) {
-        let mut connections = self.app_state.connections.lock().unwrap();
-        connections.remove(&self.username);
+        let username = self.username.clone();
+        {
+            let mut connections = self.app_state.connections.lock().unwrap();
+            connections.remove(&username);
+        }
+
+        let connections = self.app_state.connections.lock().unwrap();
+        for (_user, addr) in connections.iter() {
+            addr.do_send(UserDisconnected {
+                username: username.clone(),
+            });
+        }
     }
 }
 
@@ -49,35 +71,40 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for ChatSession {
                 match parsed {
                     Ok(client_msg) => {
                         if client_msg.recipient == "public" {
-                            // Public message
-                            let message = format!("{}: {}", self.username, client_msg.content);
+                            let message = serde_json::json!({
+                                "type": "public",
+                                "from": self.username,
+                                "content": client_msg.content
+                            }).to_string();
 
-                            // Store message for all users
                             let mut messages = self.app_state.messages.lock().unwrap();
                             for user in self.app_state.users.lock().unwrap().keys() {
                                 let user_history = messages.entry(user.clone()).or_insert(Vec::new());
-                                user_history.push(message.clone());
+                                user_history.push(format!("{}: {}", self.username, client_msg.content));
                             }
 
-                            // Broadcast to all connected clients
                             let connections = self.app_state.connections.lock().unwrap();
-                            for (user, addr) in connections.iter() {
+                            for (_user, addr) in connections.iter() {
                                 addr.do_send(BroadcastMessage(message.clone()));
                             }
                         } else {
-                            // Private message
                             let to = client_msg.recipient.clone();
                             let content = client_msg.content.clone();
                             let connections = self.app_state.connections.lock().unwrap();
                             if let Some(addr) = connections.get(&to) {
-                                addr.do_send(PrivateMessage { from: self.username.clone(), to: to.clone(), content: content.clone() });
+                                addr.do_send(PrivateMessage { from: self.username.clone(), content: content.clone() });
 
-                                // Store message history
+                                ctx.text(serde_json::json!({
+                                    "type": "private",
+                                    "from": self.username,
+                                    "content": content
+                                }).to_string());
+
                                 let mut messages = self.app_state.messages.lock().unwrap();
                                 let sender_history = messages.entry(self.username.clone()).or_insert(Vec::new());
-                                sender_history.push(format!("To {}: {}", to, content));
+                                sender_history.push(format!("До {}: {}", to, content));
                                 let recipient_history = messages.entry(to.clone()).or_insert(Vec::new());
-                                recipient_history.push(format!("From {}: {}", self.username, content));
+                                recipient_history.push(format!("Від {}: {}", self.username, content));
                             } else {
                                 ctx.text("User not found");
                             }
@@ -102,7 +129,6 @@ struct ClientMessage {
 #[rtype(result = "()")]
 struct PrivateMessage {
     from: String,
-    to: String,
     content: String,
 }
 
@@ -110,8 +136,44 @@ impl Handler<PrivateMessage> for ChatSession {
     type Result = ();
 
     fn handle(&mut self, msg: PrivateMessage, ctx: &mut Self::Context) {
-        let formatted = format!("Private from {}: {}", msg.from, msg.content);
+        let formatted = format!("Приватне повідомлення від {}: {}", msg.from, msg.content);
         ctx.text(formatted);
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+struct UserConnected {
+    username: String,
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+struct UserDisconnected {
+    username: String,
+}
+
+impl Handler<UserConnected> for ChatSession {
+    type Result = ();
+
+    fn handle(&mut self, msg: UserConnected, ctx: &mut Self::Context) {
+        let notification = serde_json::json!({
+            "type": "user_connected",
+            "username": msg.username
+        }).to_string();
+        ctx.text(notification);
+    }
+}
+
+impl Handler<UserDisconnected> for ChatSession {
+    type Result = ();
+
+    fn handle(&mut self, msg: UserDisconnected, ctx: &mut Self::Context) {
+        let notification = serde_json::json!({
+            "type": "user_disconnected",
+            "username": msg.username
+        }).to_string();
+        ctx.text(notification);
     }
 }
 
@@ -194,11 +256,10 @@ async fn ws_handler(req: HttpRequest, stream: web::Payload, data: web::Data<AppS
     if let Some(token) = token {
         let sessions = data.sessions.lock().unwrap();
         if let Some(username) = sessions.get(&token) {
-            // Valid token, establish WebSocket connection
             return ws::start(ChatSession { username: username.clone(), app_state: data.clone() }, &req, stream);
         }
     }
-    // Invalid token
+
     Ok(HttpResponse::Unauthorized().body("Unauthorized"))
 }
 
