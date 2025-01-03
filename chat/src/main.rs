@@ -2,22 +2,67 @@ use actix::prelude::*;
 use actix_files as fs;
 use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use url::Url;
+use uuid::Uuid;
 
-// WebSocket session actor
-struct ChatSession;
+struct ChatSession {
+    username: String,
+    app_state: web::Data<AppState>,
+}
 
 impl Actor for ChatSession {
     type Context = ws::WebsocketContext<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        let addr = ctx.address();
+        let mut connections = self.app_state.connections.lock().unwrap();
+        connections.insert(self.username.clone(), addr);
+    }
+
+    fn stopped(&mut self, _: &mut Self::Context) {
+        let mut connections = self.app_state.connections.lock().unwrap();
+        connections.remove(&self.username);
+    }
 }
 
-// Handle incoming WebSocket messages
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for ChatSession {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match msg {
             Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
             Ok(ws::Message::Text(text)) => {
-                // Broadcast the message to all connected clients
-                ctx.text(text);
+                if text.starts_with("/pm ") {
+                    let parts: Vec<&str> = text.splitn(3, ' ').collect();
+                    if parts.len() == 3 {
+                        let to = parts[1].to_string();
+                        let content = parts[2].to_string();
+                        let connections = self.app_state.connections.lock().unwrap();
+                        if let Some(addr) = connections.get(&to) {
+                            addr.do_send(PrivateMessage { from: self.username.clone(), to: to.clone(), content: content.clone() });
+
+                            let mut messages = self.app_state.messages.lock().unwrap();
+                            let sender_history = messages.entry(self.username.clone()).or_insert(Vec::new());
+                            sender_history.push(format!("To {}: {}", to, content));
+                            let recipient_history = messages.entry(to.clone()).or_insert(Vec::new());
+                            recipient_history.push(format!("From {}: {}", self.username, content));
+                        } else {
+                            ctx.text("User not found");
+                        }
+                    } else {
+                        ctx.text("Invalid private message format. Use /pm username message");
+                    }
+                } else {
+                    let message = format!("{}: {}", self.username, text);
+
+                    let mut messages = self.app_state.messages.lock().unwrap();
+                    for user in self.app_state.users.lock().unwrap().keys() {
+                        let user_history = messages.entry(user.clone()).or_insert(Vec::new());
+                        user_history.push(message.clone());
+                    }
+                    ctx.text(message);
+                }
             }
             Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
             _ => (),
@@ -25,17 +70,122 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for ChatSession {
     }
 }
 
-// WebSocket route handler
-async fn ws_handler(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
-    ws::start(ChatSession {}, &req, stream)
+#[derive(Message)]
+#[rtype(result = "()")]
+struct PrivateMessage {
+    from: String,
+    to: String,
+    content: String,
 }
+
+impl Handler<PrivateMessage> for ChatSession {
+    type Result = ();
+
+    fn handle(&mut self, msg: PrivateMessage, ctx: &mut Self::Context) {
+        let formatted = format!("Private from {}: {}", msg.from, msg.content);
+        ctx.text(formatted);
+    }
+}
+
+#[derive(Deserialize)]
+struct HistoryRequest {
+    token: String,
+}
+
+async fn get_history(data: web::Data<AppState>, query: web::Query<HistoryRequest>) -> HttpResponse {
+    let sessions = data.sessions.lock().unwrap();
+    if let Some(username) = sessions.get(&query.token) {
+        let messages = data.messages.lock().unwrap();
+        if let Some(history) = messages.get(username) {
+            return HttpResponse::Ok().json(history);
+        }
+        return HttpResponse::Ok().json(Vec::<String>::new());
+    }
+    HttpResponse::Unauthorized().body("Invalid token")
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct User {
+    username: String,
+    password: String
+}
+
+struct AppState {
+    users: Mutex<HashMap<String, User>>,
+    sessions: Mutex<HashMap<String, String>>, // token -> username
+    connections: Mutex<HashMap<String, Addr<ChatSession>>>, // username -> WebSocket address
+    messages: Mutex<HashMap<String, Vec<String>>>, // username -> message history
+}
+
+impl AppState {
+    fn new() -> Self {
+        AppState {
+            users: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
+            connections: Mutex::new(HashMap::new()),
+            messages: Mutex::new(HashMap::new())
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct LoginInfo {
+    username: String,
+    password: String,
+}
+
+async fn signup(data: web::Data<AppState>, new_user: web::Json<User>) -> HttpResponse {
+    let mut users = data.users.lock().unwrap();
+    if users.contains_key(&new_user.username) {
+        return HttpResponse::BadRequest().body("Username already exists");
+    }
+    users.insert(new_user.username.clone(), new_user.into_inner());
+    HttpResponse::Ok().body("User registered successfully")
+}
+
+async fn login(data: web::Data<AppState>, info: web::Json<LoginInfo>) -> HttpResponse {
+    let users = data.users.lock().unwrap();
+    if let Some(user) = users.get(&info.username) {
+        if user.password == info.password {
+            let token = Uuid::new_v4().to_string();
+            drop(users);
+            let mut sessions = data.sessions.lock().unwrap();
+            sessions.insert(token.clone(), info.username.clone());
+            return HttpResponse::Ok().json(serde_json::json!({ "token": token }));
+        }
+    }
+    HttpResponse::Unauthorized().body("Invalid credentials")
+}
+
+async fn ws_handler(req: HttpRequest, stream: web::Payload, data: web::Data<AppState>) -> Result<HttpResponse, Error> {
+    let query = req.query_string();
+    let url = Url::parse(&format!("http://localhost/?{}", query)).unwrap();
+    let token = url.query_pairs().find(|(k, _)| k == "token").map(|(_, v)| v.to_string());
+
+    if let Some(token) = token {
+        let sessions = data.sessions.lock().unwrap();
+        if let Some(username) = sessions.get(&token) {
+            // Valid token, establish WebSocket connection
+            return ws::start(ChatSession { username: username.clone(), app_state: data.clone() }, &req, stream);
+        }
+    }
+    // Invalid token
+    Ok(HttpResponse::Unauthorized().body("Unauthorized"))
+}
+
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Start HTTP server
-    HttpServer::new(|| {
+    let app_state = web::Data::new(AppState::new());
+
+    HttpServer::new(move || {
         App::new()
+            .app_data(app_state.clone())
             .route("/ws/", web::get().to(ws_handler))
+            .route("/signup", web::post().to(signup))
+            .route("/login", web::post().to(login))
+            .route("/history", web::get().to(get_history))
             .service(fs::Files::new("/", ".").index_file("index.html"))
     })
         .bind("127.0.0.1:8080")?
