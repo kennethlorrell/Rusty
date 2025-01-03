@@ -5,10 +5,16 @@
       <sourceFolder url="file://$MODULE_DIR$/calculator/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/hello_world/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/todo_list/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/chat/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/chat/backend/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/chat/frontend/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/calculator/target" />
       <excludeFolder url="file://$MODULE_DIR$/hello_world/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
       <excludeFolder url="file://$MODULE_DIR$/todo_list/target" />
+      <excludeFolder url="file://$MODULE_DIR$/chat/target" />
+      <excludeFolder url="file://$MODULE_DIR$/chat/backend/target" />
+      <excludeFolder url="file://$MODULE_DIR$/chat/frontend/target" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
