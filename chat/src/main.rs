@@ -5,12 +5,124 @@ use actix_web_actors::ws;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use actix_files::NamedFile;
+use actix_web::error::ErrorUnauthorized;
 use url::Url;
 use uuid::Uuid;
 
 struct ChatSession {
     username: String,
     app_state: web::Data<AppState>,
+}
+
+impl ChatSession {
+    fn handle_text_message(&mut self, client_msg: ClientMessage, ctx: &mut ws::WebsocketContext<Self>) {
+        let recipient = client_msg.recipient.clone();
+        let content = client_msg.content.clone().unwrap_or_default();
+
+        if recipient == "public" {
+            let message = serde_json::json!({
+                "type": "public",
+                "from": self.username,
+                "content": content
+            }).to_string();
+
+            {
+                let mut messages = self.app_state.messages.lock().unwrap();
+                for user in self.app_state.users.lock().unwrap().keys() {
+                    let user_history = messages.entry(user.clone()).or_insert(Vec::new());
+                    user_history.push(format!("{}: {}", self.username, content));
+                }
+            }
+
+            let connections = self.app_state.connections.lock().unwrap();
+            for (_user, addr) in connections.iter() {
+                addr.do_send(BroadcastMessage(message.clone()));
+            }
+        } else {
+            let to = recipient.clone();
+            let connections = self.app_state.connections.lock().unwrap();
+
+            if let Some(addr) = connections.get(&to) {
+                let private_msg = serde_json::json!({
+                    "type": "private",
+                    "from": self.username,
+                    "content": content
+                }).to_string();
+
+                addr.do_send(PrivateMessage { from: self.username.clone(), content: private_msg.clone() });
+
+                ctx.text(private_msg.clone());
+
+                {
+                    let mut messages = self.app_state.messages.lock().unwrap();
+                    let sender_history = messages.entry(self.username.clone()).or_insert(Vec::new());
+                    sender_history.push(format!("До {}: {}", to, content));
+                    let recipient_history = messages.entry(to.clone()).or_insert(Vec::new());
+                    recipient_history.push(format!("Від {}: {}", self.username, content));
+                }
+            } else {
+                let error = serde_json::json!({
+                    "type": "error",
+                    "message": "Користувач не знайдений"
+                }).to_string();
+                ctx.text(error);
+            }
+        }
+    }
+
+    fn handle_file_message(&mut self, client_msg: ClientMessage, ctx: &mut ws::WebsocketContext<Self>) {
+        if let Some(data) = client_msg.data {
+            let recipient = client_msg.recipient.clone();
+            let filename = client_msg.filename.clone().unwrap_or_default();
+
+            let file_id = Uuid::new_v4().to_string();
+            let file_path = format!("uploads/{}", file_id);
+            std::fs::create_dir_all("uploads").unwrap();
+            std::fs::write(&file_path, data).unwrap();
+
+            let metadata_message = serde_json::json!({
+                "type": "file",
+                "from": self.username,
+                "fileId": file_id,
+                "filename": filename
+            }).to_string();
+
+            if recipient == "public" {
+                let connections = self.app_state.connections.lock().unwrap();
+                for (_user, addr) in connections.iter() {
+                    addr.do_send(BroadcastMessage(metadata_message.clone()));
+                }
+            } else {
+                let connections = self.app_state.connections.lock().unwrap();
+                if let Some(addr) = connections.get(&recipient) {
+                    addr.do_send(PrivateMessage { from: self.username.clone(), content: metadata_message.clone() });
+
+                    ctx.text(metadata_message.clone());
+
+                    {
+                        let mut messages = self.app_state.messages.lock().unwrap();
+                        let sender_history = messages.entry(self.username.clone()).or_insert(Vec::new());
+                        sender_history.push(format!("До {}: Надіслав файл '{}'", recipient, filename));
+                        let recipient_history = messages.entry(recipient.clone()).or_insert(Vec::new());
+                        recipient_history.push(format!("Від {}: Отримано файл '{}'", self.username, filename));
+                    }
+                } else {
+                    let error = serde_json::json!({
+                        "type": "error",
+                        "message": "Користувач не знайдений"
+                    }).to_string();
+                    ctx.text(error);
+                }
+            }
+        } else {
+            let error = serde_json::json!({
+                "type": "error",
+                "message": "Не вибрано жодного файлу"
+            }).to_string();
+            ctx.text(error);
+        }
+    }
 }
 
 impl Actor for ChatSession {
@@ -70,47 +182,27 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for ChatSession {
                 let parsed: serde_json::Result<ClientMessage> = serde_json::from_str(&text);
                 match parsed {
                     Ok(client_msg) => {
-                        if client_msg.recipient == "public" {
-                            let message = serde_json::json!({
-                                "type": "public",
-                                "from": self.username,
-                                "content": client_msg.content
+                        if client_msg.msg_type == "file" {
+                            self.handle_file_message(client_msg, ctx);
+                        } else if client_msg.msg_type == "message" {
+                            self.handle_text_message(client_msg, ctx);
+                        } else {
+                            let error = serde_json::json!({
+                                "type": "error",
+                                "message": "Невідомий тип повідомлення"
                             }).to_string();
 
-                            let mut messages = self.app_state.messages.lock().unwrap();
-                            for user in self.app_state.users.lock().unwrap().keys() {
-                                let user_history = messages.entry(user.clone()).or_insert(Vec::new());
-                                user_history.push(format!("{}: {}", self.username, client_msg.content));
-                            }
-
-                            let connections = self.app_state.connections.lock().unwrap();
-                            for (_user, addr) in connections.iter() {
-                                addr.do_send(BroadcastMessage(message.clone()));
-                            }
-                        } else {
-                            let to = client_msg.recipient.clone();
-                            let content = client_msg.content.clone();
-                            let connections = self.app_state.connections.lock().unwrap();
-                            if let Some(addr) = connections.get(&to) {
-                                addr.do_send(PrivateMessage { from: self.username.clone(), content: content.clone() });
-
-                                ctx.text(serde_json::json!({
-                                    "type": "private",
-                                    "from": self.username,
-                                    "content": content
-                                }).to_string());
-
-                                let mut messages = self.app_state.messages.lock().unwrap();
-                                let sender_history = messages.entry(self.username.clone()).or_insert(Vec::new());
-                                sender_history.push(format!("До {}: {}", to, content));
-                                let recipient_history = messages.entry(to.clone()).or_insert(Vec::new());
-                                recipient_history.push(format!("Від {}: {}", self.username, content));
-                            } else {
-                                ctx.text("User not found");
-                            }
+                            ctx.text(error);
                         }
                     },
-                    Err(_) => ctx.text("Invalid message format"),
+                    Err(_) => {
+                        let error = serde_json::json!({
+                            "type": "error",
+                            "message": "Невідомий формат повідомлення"
+                        }).to_string();
+
+                        ctx.text(error);
+                    },
                 }
             }
             Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
@@ -119,10 +211,22 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for ChatSession {
     }
 }
 
+#[derive(Serialize)]
+struct ErrorMessage {
+    r#type: String,
+    message: String,
+}
+
 #[derive(Deserialize)]
 struct ClientMessage {
+    #[serde(rename = "type")]
+    msg_type: String,
     recipient: String,
-    content: String,
+    content: Option<String>,
+    filename: Option<String>,
+    content_type: Option<String>,
+    size: Option<usize>,
+    data: Option<Vec<u8>>,
 }
 
 #[derive(Message)]
@@ -203,9 +307,9 @@ struct User {
 
 struct AppState {
     users: Mutex<HashMap<String, User>>,
-    sessions: Mutex<HashMap<String, String>>, // token -> username
-    connections: Mutex<HashMap<String, Addr<ChatSession>>>, // username -> WebSocket address
-    messages: Mutex<HashMap<String, Vec<String>>>, // username -> message history
+    sessions: Mutex<HashMap<String, String>>,
+    connections: Mutex<HashMap<String, Addr<ChatSession>>>,
+    messages: Mutex<HashMap<String, Vec<String>>>
 }
 
 impl AppState {
@@ -228,10 +332,10 @@ struct LoginInfo {
 async fn signup(data: web::Data<AppState>, new_user: web::Json<User>) -> HttpResponse {
     let mut users = data.users.lock().unwrap();
     if users.contains_key(&new_user.username) {
-        return HttpResponse::BadRequest().body("Username already exists");
+        return HttpResponse::BadRequest().body("Такий користувач вже існує");
     }
     users.insert(new_user.username.clone(), new_user.into_inner());
-    HttpResponse::Ok().body("User registered successfully")
+    HttpResponse::Ok().body("Реєстрація успішна")
 }
 
 async fn login(data: web::Data<AppState>, info: web::Json<LoginInfo>) -> HttpResponse {
@@ -245,7 +349,7 @@ async fn login(data: web::Data<AppState>, info: web::Json<LoginInfo>) -> HttpRes
             return HttpResponse::Ok().json(serde_json::json!({ "token": token }));
         }
     }
-    HttpResponse::Unauthorized().body("Invalid credentials")
+    HttpResponse::Unauthorized().body("Не знайдено користувача з такими обліковими даними")
 }
 
 async fn ws_handler(req: HttpRequest, stream: web::Payload, data: web::Data<AppState>) -> Result<HttpResponse, Error> {
@@ -278,6 +382,20 @@ async fn get_online_users(data: web::Data<AppState>, query: web::Query<HistoryRe
     HttpResponse::Unauthorized().body("Invalid token")
 }
 
+async fn download_file(
+    data: web::Data<AppState>,
+    path: web::Path<String>,
+    query: web::Query<HistoryRequest>,
+) -> Result<NamedFile, Error> {
+    let sessions = data.sessions.lock().unwrap();
+    if sessions.get(&query.token).is_none() {
+        return Err(ErrorUnauthorized(format!("No session found for token {}", query.token)));
+    }
+
+    let file_path = format!("uploads/{}", path.into_inner());
+    Ok(NamedFile::open(file_path)?)
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let app_state = web::Data::new(AppState::new());
@@ -290,6 +408,7 @@ async fn main() -> std::io::Result<()> {
             .route("/login", web::post().to(login))
             .route("/history", web::get().to(get_history))
             .route("/online_users", web::get().to(get_online_users))
+            .route("/download/{file_id}", web::get().to(download_file))
             .service(fs::Files::new("/", ".").index_file("index.html"))
     })
         .bind("127.0.0.1:8080")?

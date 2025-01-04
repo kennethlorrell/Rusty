@@ -45,6 +45,8 @@
             <div id="messages" class="border rounded p-3 mb-3 bg-white"></div>
             <div id="input" class="input-group">
                 <input type="text" id="message" class="form-control" placeholder="Напишіть повідомлення..." />
+                <input type="file" id="file-input" style="display: none;" />
+                <button onclick="triggerFileSelect()" class="btn btn-secondary">Прикріпити</button>
                 <select id="recipient" class="form-select">
                     <option value="public">Всім</option>
                 </select>
@@ -135,6 +137,10 @@
                     } else if (data.type === 'user_disconnected') {
                         removeUser(data.username);
                         addMessage(`${data.username} вийшов з чату.`, 'system');
+                    } else if (data.type === 'file') {
+                        receiveFile(data);
+                    } else if (data.type === 'error') {
+                        addMessage(`Помилка: ${data.message}`, 'error');
                     }
                 } catch (e) {
                     console.error("Error parsing message:", e);
@@ -146,12 +152,30 @@
             };
         }
 
+        function receiveFile(data) {
+            const messages = document.getElementById('messages');
+            const msg = document.createElement('div');
+            msg.className = 'alert alert-info';
+            const link = document.createElement('a');
+            link.href = `/download/${data.fileId}?token=${token}`;
+            link.textContent = `${data.from} надіслав файл: ${data.filename}`;
+            link.target = '_blank';
+            msg.appendChild(link);
+            messages.appendChild(msg);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
         function sendMessage() {
             const input = document.getElementById('message');
             const recipient = document.getElementById('recipient').value;
             const message = input.value.trim();
             if (message !== "") {
-                const payload = { recipient, content: message };
+                const payload = {
+                    type: "message",
+                    recipient,
+                    content: message
+                };
+
                 ws.send(JSON.stringify(payload));
                 input.value = '';
             }
@@ -164,6 +188,8 @@
                 msg.className = 'alert alert-secondary';
             } else if (type === 'system') {
                 msg.className = 'alert alert-info';
+            } else if (type === 'error') {
+                msg.className = 'alert alert-danger';
             } else {
                 msg.className = 'alert alert-primary';
             }
@@ -234,6 +260,35 @@
                 sendMessage();
             }
         });
+
+        function triggerFileSelect() {
+            document.getElementById('file-input').click();
+        }
+
+        document.getElementById('file-input').addEventListener('change', function () {
+            const file = this.files[0];
+            if (file) {
+                sendFile(file);
+            }
+        });
+
+        function sendFile(file) {
+            const recipient = document.getElementById('recipient').value;
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                const arrayBuffer = e.target.result;
+                const payload = {
+                    type: 'file',
+                    recipient: recipient,
+                    filename: file.name,
+                    content_type: file.type,
+                    size: file.size,
+                    data: Array.from(new Uint8Array(arrayBuffer))
+                };
+                ws.send(JSON.stringify(payload));
+            };
+            reader.readAsArrayBuffer(file);
+        }
     </script>
 </body>
 </html>
