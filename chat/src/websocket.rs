@@ -171,15 +171,6 @@ impl ChatSession {
                 addr.do_send(BroadcastMessage(message.clone()));
             }
         } else {
-            if recipient == self.username {
-                let error = ErrorMessage {
-                    msg_type: "error".to_string(),
-                    message: "Cannot send messages to yourself.".to_string(),
-                };
-                ctx.text(json!(error).to_string());
-                return;
-            }
-
             let to = recipient.clone();
             let connections = self.app_state.connections.lock().unwrap();
 
@@ -234,15 +225,6 @@ impl ChatSession {
                     addr.do_send(BroadcastMessage(metadata_message.clone()));
                 }
             } else {
-                if recipient == self.username {
-                    let error = ErrorMessage {
-                        msg_type: "error".to_string(),
-                        message: "Cannot send files to yourself.".to_string(),
-                    };
-                    ctx.text(json!(error).to_string());
-                    return;
-                }
-
                 let connections = self.app_state.connections.lock().unwrap();
                 if let Some(addr) = connections.get(&recipient) {
                     addr.do_send(PrivateMessage { from: self.username.clone(), content: metadata_message.clone() });
