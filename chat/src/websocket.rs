@@ -82,8 +82,7 @@ impl Handler<PrivateMessage> for ChatSession {
     type Result = ();
 
     fn handle(&mut self, msg: PrivateMessage, ctx: &mut Self::Context) {
-        let formatted = format!("Приватне повідомлення від {}: {}", msg.from, msg.content);
-        ctx.text(formatted);
+        ctx.text(msg.content);
     }
 }
 
